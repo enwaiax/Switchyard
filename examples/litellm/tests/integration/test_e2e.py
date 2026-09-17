@@ -152,6 +152,8 @@ def _assert_selected(
     assert selected_model == expected
     choices = response.get("choices")
     assert isinstance(choices, list) and choices
+    message = choices[0].get("message")
+    assert isinstance(message, dict) and message.get("content")
 
 
 @pytest.mark.e2e
@@ -172,16 +174,40 @@ async def test_stage_plugin_routes_live_requests_to_both_gpt_5_6_models(
 
 @pytest.mark.e2e
 @pytest.mark.parametrize("litellm_base_url", ["random"], indirect=True)
-async def test_random_plugin_routes_live_requests_to_both_gpt_5_6_models(
+async def test_random_plugin_routes_live_requests_to_eligible_gpt_5_6_models(
     litellm_base_url: str,
 ) -> None:
-    """Exercise the seeded Random profile against both live deployments."""
-    selected = []
+    """Check successful serving by an eligible deployment on every random draw."""
     for index in range(2):
-        _, selected_model = await _complete(
+        response, selected_model = await _complete(
             litellm_base_url,
             [{"role": "user", "content": f"Reply with the number {index}."}],
         )
-        selected.append(selected_model)
+        assert selected_model in {SOL_MODEL, TERRA_MODEL}
+        _assert_selected(response, selected_model, selected_model)
 
-    assert selected == [SOL_MODEL, TERRA_MODEL]
+
+@pytest.mark.parametrize("corruption", [None, "outside-pool", "wrong-group", "empty-answer"])
+async def test_live_random_oracle_accepts_repeated_draws_and_rejects_invalid_results(
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str | None,
+) -> None:
+    """Exercise the paid test's assertions without provider traffic."""
+
+    async def complete_stub(*_args):
+        body = {"model": MODEL_GROUP, "choices": [{"message": {"content": "answer"}}]}
+        selected = SOL_MODEL
+        if corruption == "outside-pool":
+            selected = "unconfigured/model"
+        elif corruption == "wrong-group":
+            body["model"] = "wrong-group"
+        elif corruption == "empty-answer":
+            body["choices"][0]["message"]["content"] = ""
+        return body, selected
+
+    monkeypatch.setitem(globals(), "_complete", complete_stub)
+    if corruption is None:
+        await test_random_plugin_routes_live_requests_to_eligible_gpt_5_6_models("unused")
+    else:
+        with pytest.raises(AssertionError):
+            await test_random_plugin_routes_live_requests_to_eligible_gpt_5_6_models("unused")

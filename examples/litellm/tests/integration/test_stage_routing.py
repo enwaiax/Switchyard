@@ -97,22 +97,35 @@ async def test_stage_plugin_controls_real_litellm_router_pipeline() -> None:
     assert capable.choices[0].message.content == "served by capable"
 
 
-async def test_seeded_random_plugin_reaches_both_litellm_candidates() -> None:
-    router = Router(model_list=model_list(), plugins=[RandomRoutingPlugin(seed=6)])
-
-    served = {
-        (
-            await router.acompletion(
+@pytest.mark.parametrize(
+    ("weights", "eligible"),
+    [
+        (None, {"served by capable", "served by efficient"}),
+        ([1.0, 0.0], {"served by capable"}),
+        ([0.0, 1.0], {"served by efficient"}),
+    ],
+    ids=["uniform", "capable-only", "efficient-only"],
+)
+async def test_seeded_random_plugin_replays_eligible_litellm_selections(
+    weights: list[float] | None,
+    eligible: set[str],
+) -> None:
+    sequences = []
+    for _ in range(2):
+        router = Router(
+            model_list=model_list(),
+            plugins=[RandomRoutingPlugin(seed=6, weights=weights)],
+        )
+        served = []
+        for index in range(8):
+            response = await router.acompletion(
                 model=MODEL_GROUP,
                 messages=[{"role": "user", "content": f"Request {index}"}],
             )
-        )
-        .choices[0]
-        .message.content
-        for index in range(2)
-    }
-
-    assert served == {"served by capable", "served by efficient"}
+            served.append(response.choices[0].message.content)
+        assert set(served) <= eligible
+        sequences.append(served)
+    assert sequences[0] == sequences[1]
 
 
 class DeploymentRequestRecorder(CustomLogger):
